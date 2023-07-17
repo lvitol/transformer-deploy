@@ -53,7 +53,7 @@ from transformer_deploy.backends.pytorch_utils import (
     infer_feature_extraction_pytorch,
     infer_text_generation,
 )
-from transformer_deploy.backends.st_utils import STransformerWrapper, load_sentence_transformers
+from transformer_deploy.backends.st_utils import STransformerWrapper, load_sentence_transformers, MeanEmbeddingWrapper
 from transformer_deploy.benchmarks.utils import generate_multiple_inputs, print_timings, setup_logging, track_infer_time
 from transformer_deploy.t5_utils.conversion_utils import (
     ExtT5,
@@ -110,6 +110,7 @@ def main(commands: argparse.Namespace):
     if commands.device is None:
         commands.device = "cuda" if torch.cuda.is_available() else "cpu"
 
+    logging.info(f"using device {commands.device}")
     if commands.device == "cpu" and "tensorrt" in commands.backend:
         raise Exception("can't perform inference on CPU and use Nvidia TensorRT as backend")
 
@@ -139,7 +140,7 @@ def main(commands: argparse.Namespace):
     )
     input_names: List[str] = tokenizer.model_input_names
     if commands.task == "embedding":
-        model_pytorch: Union[PreTrainedModel, STransformerWrapper] = load_sentence_transformers(
+        model_pytorch: Union[PreTrainedModel, STransformerWrapper, MeanEmbeddingWrapper] = load_sentence_transformers(
             commands.model, use_auth_token=auth_token
         )
     elif commands.task == "classification":
@@ -248,7 +249,7 @@ def main(commands: argparse.Namespace):
             logging.info("preparing Pytorch (INT-8) benchmark")
             model_pytorch = torch.quantization.quantize_dynamic(model_pytorch, {torch.nn.Linear}, dtype=torch.qint8)
             engine_name = "Pytorch (INT-8)"
-            logging.info("running Pytorch (FP32) benchmark")
+            logging.info("running Pytorch (INT-8) benchmark")
             pytorch_int8_output, time_buffer = launch_inference(
                 infer=get_pytorch_infer(model=model_pytorch, cuda=run_on_cuda, task=commands.task),
                 inputs=inputs_pytorch,
@@ -295,7 +296,7 @@ def main(commands: argparse.Namespace):
         logging.info("preparing TensorRT (FP16) benchmark")
         try:
             import tensorrt as trt
-            from tensorrt.tensorrt import ICudaEngine, Logger, Runtime
+            from tensorrt import ICudaEngine, Logger, Runtime
 
             from transformer_deploy.backends.trt_utils import build_engine, load_engine, save_engine
         except ImportError:
@@ -414,7 +415,7 @@ def main(commands: argparse.Namespace):
                     for _ in range(5)
                 ]
             else:
-                model_path = onnx_model_path if is_fp16 else optim_model_paths[0]
+                model_path = onnx_model_path if not is_fp16 else optim_model_paths[0]
                 ort_model = create_model_for_provider(
                     path=model_path,
                     provider_to_use=provider,

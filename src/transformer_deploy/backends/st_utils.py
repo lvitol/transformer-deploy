@@ -17,14 +17,39 @@ Utils related to sentence-transformers.
 """
 
 from torch import nn
-
+from torch import Tensor
+from typing import Callable, Dict, List, Tuple, Type, Union
+from transformers import AutoModel
 
 try:
     # noinspection PyUnresolvedReferences
     from sentence_transformers import SentenceTransformer
+    from InstructorEmbedding import INSTRUCTOR
 except ImportError:
     pass
 
+def average_pool(last_hidden_states: Tensor,
+                 attention_mask: Tensor) -> Tensor:
+    last_hidden = last_hidden_states.masked_fill(~attention_mask[..., None].bool(), 0.0)
+    return last_hidden.sum(dim=1) / attention_mask.sum(dim=1)[..., None]
+
+class MeanEmbeddingWrapper(nn.Module):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def forward(self, *kargs, **kwargs):
+        inputs = dict()
+        if len(kargs) >= 2:
+            inputs["input_ids"] = kargs[0]
+            inputs["attention_mask"] = kargs[-1]
+            if len(kargs) == 3:
+                inputs["token_type_ids"] = kargs[1]
+        if len(kwargs) > 0:
+            inputs = kwargs
+        assert 2 <= len(inputs) <= 3, f"unexpected number of inputs: {len(inputs)}"
+        outputs = self.model.forward(**inputs)
+        return average_pool(outputs.last_hidden_state, inputs['attention_mask'])
 
 class STransformerWrapper(nn.Module):
     """
@@ -49,7 +74,7 @@ class STransformerWrapper(nn.Module):
         return outputs["sentence_embedding"]
 
 
-def load_sentence_transformers(path: str, use_auth_token: str = None) -> STransformerWrapper:
+def load_sentence_transformers(path: str, use_auth_token: str = None) -> Union[STransformerWrapper, MeanEmbeddingWrapper]:
     """
     Load sentence-transformers model and wrap it to make it behave like any other transformers model
     :param path: path to the model
@@ -69,7 +94,13 @@ def load_sentence_transformers(path: str, use_auth_token: str = None) -> STransf
         f"sentence-transformers library's version is {sentence_transformers.__version__}, "
         f"you need at least the V2.2.0 version"
     )
-    model: SentenceTransformer = sentence_transformers.SentenceTransformer(
-        model_name_or_path=path, use_auth_token=use_auth_token
-    )
-    return STransformerWrapper(model=model)
+    if "e5-" not in path:
+        the_cls = sentence_transformers.SentenceTransformer if "instructor" not in path else INSTRUCTOR
+        print(f"the class is {the_cls}")
+        model = the_cls(
+            model_name_or_path=path, use_auth_token=use_auth_token
+        )
+        return STransformerWrapper(model=model)
+    else:
+        model = AutoModel.from_pretrained(path)
+        return MeanEmbeddingWrapper(model)
